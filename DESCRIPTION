@@ -1,0 +1,13 @@
+Package: compare.package.directories
+Type: Package
+Title: Compare Package Directories
+Version: 0.1.0
+Authors@R: person("Brad", "Cannell", email = "brad.cannell@gmail.com",
+  role = c("aut", "cre", "cph"))
+Maintainer: Brad Cannell <brad.cannell@gmail.com>
+Description: Compare the files that exist in two different directories. 
+  Used when moving large directories around between remote (i.e., Dropbox,
+  OneDrive, etc.) or local locations.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
