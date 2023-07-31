@@ -1,0 +1,743 @@
+---
+title: "Developing Compare Package Directories"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{using_compare_package_directories}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+# library(compare.package.directories)
+```
+
+# Resources
+
+- [Stack Overflow post](https://stackoverflow.com/questions/43816624/compare-filenames-in-2-folders-and-move-the-unmatched-files-to-a-separate-folder)
+
+# Introduction
+
+We were sometimes losing files while transitioning them between OneDrive and SharePoint. Manually trying to figure out which files are being lost is tedious, time-consuming, and error-prone. This package is intended to make it relatively quick and easy to:
+
+1. Figure out if any files were lost when copying `directory D` from `location A` to `location B`.
+2. If so, which files were lost.
+3. Move the missing files from `location A` to `location B` - making it complete.
+
+**NOTE:** If you _move_ (i.e., drag or cut and paste) `directory D` from `location A` to `location B`, then `directory D` will no longer exist in `location A`. If `directory D` doesn't exist in `location A`, then there are no files in `location A` to use as a comparison for `location B`. Therefore, _copy_ `directory D` from `location A` to `location B`. You can always delete `directory D` from `location A` _after_ you are satisfied that all files were copied over successfully.
+
+
+# Example 1
+
+In this example, we have a some files (listed below) that were stored on OneDrive. Later, we created a SharePoint site and decided to store the files there instead. We copied them over to the SharePoint folder on our local machine (synced via the OneDrive app), and now we want to make sure that all of the files from OneDrive made it over to SharePoint.
+
+This package contains two folders in `inst/extdata` that are intended to simulate the scenario above. 
+
+1. `onedrive`
+2. `sharepoint`
+
+For demonstration purposes, we are assuming that all of the files were _not_ successfully copied from `onedrive` to `sharepoint`. So, the file structure currently looks like this:
+
+- `inst/extdata/onedrive/data`
+  - `data_1.csv`
+  - `data_1.xlsx`
+- `inst/extdata/onedrive/documents`
+  - `Test Document.docx`
+  - `Test Document.pdf`
+  
+- `inst/extdata/sharepoint/data`
+  - `data_1.xlsx`
+- `inst/extdata/sharepoint/documents`
+  - `Test Document.pdf`
+
+So, `data_1.csv` and `Test Document.docx` were not successfully copied. Let's create a function to find that out and fix it.
+
+## Set path to `location A`
+
+```{r}
+path_a <- here::here("inst/extdata/onedrive")
+path_a
+```
+
+Save the directory name only. We will need it later
+
+```{r}
+path_a_base <- basename(path_a)
+path_a_base
+```
+
+## Set path to `location B`
+
+```{r}
+path_b <- here::here("inst/extdata/sharepoint")
+path_b
+```
+
+Save the directory name only. We will need it later
+
+```{r}
+path_b_base <- basename(path_b)
+path_b_base
+```
+
+## Create a list of files
+
+- The `full.names = TRUE` argument to `list.files()`, which we will use later, causes the full file path to be returned. This is useful for moving files later.
+- However, it causes a problem in the short-term. Later, we ask R to tell us which files exist in `location A` but not `location B`. By default, it will compare the full file paths, and doing so will cause R to tell us that **all** of the files in `location A` are missing from `location B` even if they aren't. Why? Because `.../onedrive/data/data_1.csv` is technically different than `.../sharepoint/data/data_1.csv`. Said another way, R is only comparing the character string files paths -- not only the file names -- and certainly not the contents of the files.
+- We will address this issue below using `base::basename()` to strip everything except the file name from the file paths.
+
+**NOTE** Using `base::basename()` to strip everything except the file name from the file paths and comparing the file names alone could be an incomplete solution, which returns unexpected results. For example, suppose we have two files with the same name `demographics_data.csv` stored in two different subfolders of `onedrive`, `group_1` and `group_2`. So, we will have `onedrive/group_1/demographics_data.csv` and `onedrive/group_2/demographics_data.csv`. Will `base::basename()` see those as different files?
+
+```{r}
+basename(c(
+  "onedrive/group_1/demographics_data.csv", 
+  "onedrive/group_2/demographics_data.csv"
+))
+```
+
+No, it won't. So, what happens if `onedrive` has `onedrive/group_1/demographics_data.csv` and `onedrive/group_2/demographics_data.csv`, but `sharepoint` only has `sharepoint/group_1/demographics_data.csv`?
+
+```{r}
+test_files_a <- c(
+  "onedrive/group_1/demographics_data.csv", 
+  "onedrive/group_2/demographics_data.csv"
+)
+test_files_b <- c("sharepoint/group_1/demographics_data.csv")
+```
+
+Without `base::basename()`
+
+```{r}
+dplyr::setdiff(test_files_a, test_files_b)
+```
+
+This isn't the result we want because `sharepoint` already has `group_1/demographics_data.csv`. It was copied over successfully and doesn't need to be copied over again.
+
+With `base::basename()`
+
+```{r}
+dplyr::setdiff(basename(test_files_a), basename(test_files_b))
+```
+
+This isn't the result we want either. R isn't telling us that `sharepoint` is missing `group_2/demographics_data.csv`. It wasn't copied over successfully and we do need to copy it over.
+
+### Solution
+
+This is the result we want:
+
+```{r}
+test_files_a <- c(
+  "group_1/demographics_data.csv", 
+  "group_2/demographics_data.csv"
+)
+test_files_b <- c("group_1/demographics_data.csv")
+dplyr::setdiff(test_files_a, test_files_b)
+```
+
+So, we need to remove all characters from the start of the file path and the folder names for `location A` and `location B` (inclusive). Then, we will compare the remain parts for the file paths.
+
+Let's create a regex to do that: https://regex101.com/r/iwh1Bx/2
+
+```{r}
+test_path_a <- "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive"
+test_path_b <- "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint"
+```
+
+```{r}
+test_files_a <- c(
+  "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive/group_1/demographics_data.csv", 
+  "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive/group_2/demographics_data.csv"
+)
+test_files_b <- c(
+  "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/group_1/demographics_data.csv"
+)
+```
+
+Test out writing the location name in manually
+
+```{r}
+stringr::str_replace(
+  string = test_files_a,
+  pattern = "(.*\\/onedrive\\/)(.*)",
+  replacement = "\\2"
+)
+```
+
+#### Automate the pattern
+
+```{r}
+test_path_a_base <- basename(test_path_a)
+test_path_b_base <- basename(test_path_b)
+```
+
+```{r}
+test_path_a_pattern <- paste0("(.*\\/", test_path_a_base, "\\/)(.*)")
+test_path_b_pattern <- paste0("(.*\\/", test_path_b_base, "\\/)(.*)")
+```
+
+```{r}
+test_files_a_compare <- stringr::str_replace(
+  string = test_files_a,
+  pattern = test_path_a_pattern,
+  replacement = "\\2"
+)
+```
+
+```{r}
+test_files_b_compare <- stringr::str_replace(
+  string = test_files_b,
+  pattern = test_path_b_pattern,
+  replacement = "\\2"
+)
+```
+
+Compare
+
+```{r}
+dplyr::setdiff(test_files_a_compare, test_files_b_compare)
+```
+
+And this is the result we want!
+
+Delete all the `test` files to clean up the global environment.
+
+```{r}
+rm(list = ls()[stringr::str_detect(ls(), "test")])
+```
+
+## Create a list of files in `location A`
+
+```{r}
+files_a_full_path <- list.files(path_a, full.names = TRUE, recursive = TRUE)
+files_a_full_path
+```
+
+```{r}
+path_a_pattern <- paste0("(.*\\/", path_a_base, "\\/)(.*)")
+path_a_pattern
+```
+
+```{r}
+files_a_compare <- stringr::str_replace(
+  string = files_a_full_path,
+  pattern = path_a_pattern,
+  replacement = "\\2"
+)
+files_a_compare
+```
+
+## Create a list of files in `location B`
+
+```{r}
+files_b_full_path <- list.files(path_b, full.names = TRUE, recursive = TRUE)
+files_b_full_path
+```
+
+```{r}
+path_b_pattern <- paste0("(.*\\/", path_b_base, "\\/)(.*)")
+path_b_pattern
+```
+
+```{r}
+files_b_compare <- stringr::str_replace(
+  string = files_b_full_path,
+  pattern = path_b_pattern,
+  replacement = "\\2"
+)
+files_b_compare
+```
+
+## Create a vector of files that exist in `location A` but not in `location B`.
+
+- `setdiff(x, y)` finds all rows in x that aren't in y.
+
+```{r}
+in_a_not_b <- dplyr::setdiff(files_a_compare, files_b_compare)
+in_a_not_b
+```
+
+Alternatively, use the following code to create a logical vector of file differences.
+
+```{r}
+# TRUE where a file exist in both locations
+files_to_move_index <- files_a_compare %in% files_b_compare
+# Now TRUE where a file does NOT exist in both locations
+files_to_move_index <- !files_to_move_index
+files_to_move_index
+```
+
+View the files names
+
+```{r}
+files_a_compare[files_to_move_index]
+```
+
+Works as expected!
+
+## Store the number of elements in `in_a_not_b`
+
+```{r}
+length_in_a_not_b <- length(in_a_not_b)
+```
+
+## Generate messages for users
+
+We can use these vectors to generate a message for the user.
+
+```{r}
+# Use base::basename() to view the end of the filepath only.
+# It makes the message easier to read.
+cat("There are", length_in_a_not_b, "files in", basename(path_a), "that aren't in", basename(path_b), ".")
+```
+
+```{r}
+# Use base::basename() to view the end of the file path only.
+# It makes the message easier to read.
+# Also add quotes around the location names to make them stand out more int the
+# message.
+message_overview <- paste0(
+  "There are ", length_in_a_not_b, " files in ", 
+  paste0("'", basename(path_a), "'"), " that aren't in ", 
+  paste0("'", basename(path_b), "'"), "."
+)
+print(message_overview)
+```
+
+```{r}
+message_files <- list(
+  results = message_overview,
+  files = in_a_not_b
+)
+print(message_files)
+```
+
+## Explicitly copy missing files from `location A` to `location B`.
+
+### Manual test
+
+Test copying over one file manually first.
+
+- What does `recursive = TRUE` do?
+  - logical. If `to` is a directory, should directories in `from` be copied (and their contents)? (Like cp -R on POSIX OSes.)
+  - In testing, I get the same result with and without `recursive = TRUE`.
+  
+- What happens if the file already exists?
+  - By default, nothing. `file.copy()` will not attempt to overwrite the file unless `overwrite = TRUE`.
+  
+- What does `copy.date = TRUE` do?
+  - logical: should file dates be preserved where possible? See Sys.setFileTime.
+
+```{r}
+file.copy(
+  from = files_a_full_path[files_to_move_index][1], 
+  to = path_b,
+  copy.date = TRUE
+)
+```
+
+Check the results
+
+```{r}
+list.files(path_b)
+```
+
+**Problem:** This copies `data_1.csv` to the top-level directory, `sharepoint`. But, we really want it to copy it to `sharepoint/data`. How can we do that?
+
+Start by deleting `data_1.csv` from `sharepoint`.
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/data_1.csv")
+```
+
+Try again. This time, type in the exact file paths we want `file.copy()` to use.
+
+```{r}
+file.copy(
+  from = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive/data/data_1.csv", 
+  # Add `data` to the end of the file path
+  to = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/data"
+)
+```
+
+This works! How can we automate it?
+
+### Automate copy one file
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/data/data_1.csv")
+```
+
+How do we get from these file paths:
+
+```{r}
+files_a_full_path[files_to_move_index][1]
+```
+
+```{r}
+path_b
+```
+
+To the paths we want?
+
+I need to add everything in `files_a_full_path` that comes after `onedrive` and before `data_1.csv` to the end of `path_b`.
+
+```{r}
+# For testing
+stringr::str_replace(
+  string = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive/data/another folder/folder 3/data_1.csv",
+  pattern = "(.*\\/onedrive\\/)(.*)(\\/.*$)",
+  replacement = "\\2"
+)
+```
+
+Update `path_a_pattern`
+
+```{r}
+path_a_pattern_for_file_copy <- paste0(path_a_pattern,"(\\/.*$)")
+path_a_pattern_for_file_copy
+```
+
+```{r}
+# For testing
+stringr::str_replace(
+  string = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive/data/another folder/folder 3/data_1.csv",
+  pattern = path_a_pattern_for_file_copy,
+  replacement = "\\2"
+)
+```
+
+Get folder names that need to be added to `path_b`.
+
+```{r}
+test_add_to_path_b <- stringr::str_replace(
+  string = files_a_full_path[files_to_move_index][1],
+  pattern = path_a_pattern_for_file_copy,
+  replacement = "\\2"
+)
+test_add_to_path_b
+```
+
+```{r}
+test_path_b_updated <- paste(path_b, test_add_to_path_b, sep = "/")
+test_path_b_updated
+```
+
+```{r}
+file.copy(
+  from = files_a_full_path[files_to_move_index][1], 
+  # Add `data` to the end of the file path
+  to = test_path_b_updated,
+  copy.date = TRUE
+)
+```
+
+This works! Now, can we copy multiple files
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/data/data_1.csv")
+```
+
+### Copy multiple files manually
+
+Update `path_a_pattern`. This pattern will be used for all files copied.
+
+```{r}
+path_a_pattern_for_file_copy <- paste0(path_a_pattern,"(\\/.*$)")
+path_a_pattern_for_file_copy
+```
+
+#### Copy file 1
+
+```{r}
+test_add_to_path_b <- stringr::str_replace(
+  string = files_a_full_path[files_to_move_index][1],
+  pattern = path_a_pattern_for_file_copy,
+  replacement = "\\2"
+)
+test_add_to_path_b
+```
+
+```{r}
+test_path_b_updated <- paste(path_b, test_add_to_path_b, sep = "/")
+test_path_b_updated
+```
+
+```{r}
+file.copy(
+  from = files_a_full_path[files_to_move_index][1], 
+  # Add `data` to the end of the file path
+  to = test_path_b_updated,
+  copy.date = TRUE
+)
+```
+
+#### Copy file 2
+
+Change the `1` in `files_a_full_path[files_to_move_index][1]` to a `2`: `files_a_full_path[files_to_move_index][2]`.
+
+```{r}
+test_add_to_path_b <- stringr::str_replace(
+  string = files_a_full_path[files_to_move_index][2],
+  pattern = path_a_pattern_for_file_copy,
+  replacement = "\\2"
+)
+test_add_to_path_b
+```
+
+```{r}
+test_path_b_updated <- paste(path_b, test_add_to_path_b, sep = "/")
+test_path_b_updated
+```
+
+```{r}
+file.copy(
+  from = files_a_full_path[files_to_move_index][2], 
+  # Add `data` to the end of the file path
+  to = test_path_b_updated,
+  copy.date = TRUE
+)
+```
+
+This works! Now, let's automate it.
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/data/data_1.csv")
+```
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/documents/Test Document.docx")
+```
+
+Delete all the `test` files to clean up the global environment.
+
+```{r}
+rm(list = ls()[stringr::str_detect(ls(), "test")])
+```
+
+### Automate copy multiple files
+
+```{r}
+# Update `path_a_pattern`.
+# This will be used add everything in `files_a_full_path` that comes after 
+# the directory name (e.g., `onedrive`) and before the file name (e.g., 
+# `data_1.csv`) to the end of `path_b`.
+# This pattern will be used for all files copied from location A to location
+# B.
+path_a_pattern_for_file_copy <- paste0(path_a_pattern,"(\\/.*$)")
+
+# Create a vector to contain the results of the for loop
+results_list <- vector(mode = "character", length = length_in_a_not_b)
+
+# Iterate over each file to be moved
+for (i in seq_along(in_a_not_b)) {
+  # Use `path_a_pattern_for_file_copy` to get the part(s) of `files_a_full_path`
+  # we want to add to the end of path_b
+  add_to_path_b <- stringr::str_replace(
+    string = files_a_full_path[files_to_move_index][i],
+    pattern = path_a_pattern_for_file_copy,
+    replacement = "\\2"
+  )
+  
+  # Add `add_to_path_b` to the end of `path_b`
+  path_b_updated <- paste(path_b, add_to_path_b, sep = "/")
+  
+  # Copy the the file from `location A` to `location B`
+  # Returns TRUE or FALSE
+  copy_result <- file.copy(
+    from = files_a_full_path[files_to_move_index][i], 
+    # Add `data` to the end of the file path
+    to = path_b_updated,
+    copy.date = TRUE
+  )
+  
+  # Add results to results list for the user
+  if (copy_result) {
+    copy_result_message <- paste(in_a_not_b[i], "copied to", path_b_updated)
+    results_list[i] <- copy_result_message
+  } else {
+    copy_result_message <- paste(in_a_not_b[i], "was NOT copied to", path_b_updated)
+    stop(copy_result_message)
+  }
+}
+
+results_list
+```
+
+This works! Now, let's wrap everything up into a function!
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/data/data_1.csv")
+```
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/documents/Test Document.docx")
+```
+
+#### Without a for loop
+
+Can I repeat the results above without using a for loop?
+
+```{r}
+# Update `path_a_pattern`.
+# This will be used add everything in `files_a_full_path` that comes after 
+# the directory name (e.g., `onedrive`) and before the file name (e.g., 
+# `data_1.csv`) to the end of `path_b`.
+# This pattern will be used for all files copied from location A to location
+# B.
+path_a_pattern_for_file_copy <- paste0(path_a_pattern,"(\\/.*$)")
+
+# Create a vector of files to move
+files_copy <- files_a_full_path[files_to_move_index]
+
+# Use `path_a_pattern_for_file_copy` to get the part(s) of `files_a_full_path`
+# we want to add to the end of path.
+add_to_path_b_fn <- function(path, pattern) {
+  stringr::str_replace(
+    string = path,
+    pattern = path_a_pattern_for_file_copy,
+    replacement = "\\2"
+  )
+}
+
+add_to_path_b <- purrr::map_chr(files_copy, add_to_path_b_fn)
+
+# Add `add_to_path_b` to the end of `path_b`
+path_b_updated <- paste(path_b, add_to_path_b, sep = "/")
+
+# Function to to...
+create_copy_result_message <- function(result, from, to) {
+  if (copy_result) {
+    paste(from, "copied to", to)
+  } else {
+    paste(from, "was NOT copied to", to)
+  }
+}
+
+# Create a vector to contain the results of the for loop and saves them in a
+# list for the user to review
+copy_results <- purrr::pmap_chr(
+  list(files_copy, path_b_updated, in_a_not_b),
+  function(files_copy, path_b_updated, in_a_not_b) {
+    # Copy the the file from `location A` to `location B`
+    # Returns TRUE or FALSE 
+    copy_result <- file.copy(files_copy, path_b_updated, copy.date = TRUE)
+    # Generate a message letting the user know if the files was copied or not.
+    create_copy_result_message(copy_result, in_a_not_b, path_b_updated)
+  }
+)
+
+copy_results
+```
+
+```{r}
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/data/data_1.csv")
+file.remove("/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint/documents/Test Document.docx")
+```
+
+This works! Make the output easier to read. Maybe make a list.
+
+```{r}
+# Get the trues and falses
+
+# Pass them to pmap along witht he file paths
+
+# Actually the output above my be totally readable if we just shorten the `to` file path. Use the code from the "Create a list of files in `location B`" section above.
+```
+
+# Make package functions
+
+```{r}
+# Clear out the global environment.
+rm(list = ls())
+```
+
+```{r}
+find_directory_differences <- function(from, to) {
+  
+  # Save the directory name only. We will need it later.
+  path_from_base <- basename(from)
+  path_to_base <- basename(to)
+  
+  # Create a list of files in both locations
+  # See vignette, developing_compare_package_directories for details about this
+  # section of the code.
+  
+  ## From files
+  files_from_full_path <- list.files(from, full.names = TRUE, recursive = TRUE)
+  path_from_pattern <- paste0("(.*\\/", path_from_base, "\\/)(.*)")
+  files_from_compare <- stringr::str_replace(
+    string = files_from_full_path,
+    pattern = path_from_pattern,
+    replacement = "\\2"
+  )
+  
+  ## To files
+  files_to_full_path <- list.files(to, full.names = TRUE, recursive = TRUE)
+  path_to_pattern <- paste0("(.*\\/", path_to_base, "\\/)(.*)")
+  files_to_compare <- stringr::str_replace(
+    string = files_to_full_path,
+    pattern = path_to_pattern,
+    replacement = "\\2"
+  )
+  
+  # Create a vector of files that exist in `from` but not in `to`.
+  in_from_not_to <- dplyr::setdiff(files_from_compare, files_to_compare)
+  
+  # Create a logical vector of file differences.
+  # TRUE where a file exist in both locations
+  files_to_move_index <- files_from_compare %in% files_to_compare
+  # Now TRUE where a file does NOT exist in both locations
+  files_to_move_index <- !files_to_move_index
+  files_to_move_index
+  
+  # Store the number of elements in `in_from_not_to`
+  length_in_from_not_to <- length(in_from_not_to)
+
+  # Generate messages for users
+  # Use base::basename() to view the end of the file path only.
+  # It makes the message easier to read.
+  # Also add quotes around the location names to make them stand out more int the
+  # message.
+  message_overview <- paste0(
+    "There are ", length_in_from_not_to, " files in ", 
+    paste0("'", path_from_base, "'"), " that aren't in ", 
+    paste0("'", path_to_base, "'"), "."
+  )
+  
+  ## Add the list of file names to the message
+  message_files <- list(
+    results = message_overview,
+    files = in_from_not_to
+  )
+
+  
+  # Return result
+  message_files
+}
+
+# For testing
+find_directory_differences(
+  from = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive",
+  to   = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint"
+)
+```
+
+```{r}
+copy_missing_files <- function(from, to) {
+  
+}
+
+# For testing
+copy_missing_files(
+  from = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/onedrive",
+  to   = "/Users/bradcannell/Library/CloudStorage/Dropbox/R/Packages/compare.package.directories/inst/extdata/sharepoint"
+)
+```
+
+

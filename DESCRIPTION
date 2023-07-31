@@ -11,3 +11,7 @@ Description: Compare the files that exist in two different directories.
 License: MIT + file LICENSE
 Encoding: UTF-8
 LazyData: true
+Suggests: 
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
